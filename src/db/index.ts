@@ -14,6 +14,7 @@ export {
   getMessagingGroupByPlatform,
   getAllMessagingGroups,
   getMessagingGroupsByChannel,
+  getMessagingGroupsByAgentGroup,
   updateMessagingGroup,
   deleteMessagingGroup,
   createMessagingGroupAgent,

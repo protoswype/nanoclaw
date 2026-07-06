@@ -204,6 +204,7 @@ export async function run(args: string[]): Promise<void> {
     {
       cwd: path.join(projectRoot, 'container'),
       stdio: 'inherit',
+      env: { ...process.env, DOCKER_BUILDKIT: '1' },
     },
   );
   if (buildRes.status === 0) {
