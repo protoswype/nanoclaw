@@ -57,6 +57,16 @@ export interface QueryInput {
   systemContext?: {
     instructions?: string;
   };
+
+  /**
+   * Per-wake model override. When set, takes precedence over the model the
+   * provider was constructed with (`ProviderOptions.model`). Used by the
+   * pre-task gate to pick a model per task type — e.g. a bash gate emits
+   * `{ model: 'opus' }` in its script output for planning wakes and the
+   * poll-loop threads it here so that single query runs on the chosen model
+   * without a container restart. If omitted, the provider's default is used.
+   */
+  model?: string;
 }
 
 export interface McpServerConfig {
