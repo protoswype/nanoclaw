@@ -30,6 +30,16 @@ git config --global user.email "claw-service-account@users.noreply.gitlab.com"
 git config --global advice.detachedHead false
 ```
 
+## Division of labour — you own labels, humans own mentions
+
+This is the operating model. Do not deviate from it:
+
+- **You (the agent) make every `status::*` and label change** on stories and epics. A label change is *not* a signal a human sends you — it is a state *you* record. Never ask a human to add, remove, or change a label, and never write a comment like "set this to `status::in-implementation` to proceed."
+- **Humans act only through comments.** A human `@`-mention of you (`@protoswype-nanoclaw`) is the signal to act — that is what creates your todo. **Approvals arrive as mentions**, e.g. a human replies "approved" / "looks good, proceed" on your plan. When you finish a stage and need sign-off, ask the human to **reply mentioning you to approve** — never to touch a label.
+- On a human approval, *you* perform the matching label transition and continue. Examples: human approves a refined story → **you** set `status::ready`; human approves a plan → **you** set `status::in-implementation` and implement.
+- `human-needed` is **your** label and goes **only on the story**, never on a merge request. It marks "waiting for a human mention." You add it and you remove it (once the human replies).
+- The one thing you never do is place a ✅ award emoji yourself — that specific approval must come from a human.
+
 ## What you do each wake
 
 The pre-task gate has already polled `GET /todos?state=pending`, picked **one** todo (oldest first), and passed it as `Script output` in your prompt:
@@ -77,9 +87,9 @@ The skill owns the *shape*; these are the *lifecycle* rules the pipeline depends
 
 - **`epic-refine`** — Load `po-epic-refiner`. Read the epic (`target_iid`) and its discussion, apply the skill's validation, post a refinement comment. If it passes validation or is blocked on a human decision, add `human-needed`.
 
-- **`story`** — Load `po-story-refiner`. For a ready epic with no children, break it into child stories (work item type `Task`, native children of the epic). For an in-refinement story with new human feedback, adapt it. Stories carry the scoped `status::in-refinement` and `human-needed`. **Never** apply `status::ready` to a story (human-only) and never remove `human-needed` — those are human moves.
+- **`story`** — Load `po-story-refiner`. For a ready epic with no children, break it into child stories (work item type `Task`, native children of the epic), leave them `status::in-refinement` + `human-needed`, and ask the human to review by replying with a mention. For an in-refinement story with new human feedback, adapt it and ask for approval the same way. **When the human approves a refined story (a reply mentioning you), you set `status::ready` yourself** and remove `status::in-refinement` + `human-needed`. Graduating to ready is your label move, triggered by the human's mention — not a label the human sets.
 
-- **`plan`** — Load `dev-plan`. Create branch `feature/<storyIid>` from `main`, write `delivery/dev-plans/issue-<storyIid>/PLAN.md` via the Commits API, create the **primary MR** in the main project, and open MRs in any affected delivery repos (linked from the primary). Post a comment on the primary MR asking for human verification and @mention `@protoswype-group/life-coach`. Add `human-needed` to the story. The human promotes the story to `status::in-implementation` after approving the plan — that is not your move.
+- **`plan`** — Load `dev-plan`. Create branch `feature/<storyIid>` from `main`, write `delivery/dev-plans/issue-<storyIid>/PLAN.md` via the Commits API, create the **primary MR** in the main project, and open MRs in any affected delivery repos (linked from the primary). Post a comment on the primary MR asking the human to **approve by replying with a mention** (never "set a label") and @mention `@protoswype-group/life-coach`. Add `human-needed` **to the story** (not the MR). **When the human approves the plan (a reply mentioning you), that todo returns the story to you: you set `status::in-implementation` yourself, remove `human-needed`, and proceed to implement in the same wake.**
 
 - **`implement`** — Load `dev-implement`. The story is `status::in-implementation`. Clone the repos (git works here), checkout the existing `feature/<storyIid>` branch, implement per the approved plan, **prove it compiles** (build + test — never push code that fails to build), and push small coherent commits (renames in their own commit; `Ref #<storyIid>` in every message). Then decide the outcome and drive the loop (below).
 
@@ -102,7 +112,15 @@ The implement and review modes hand off to each other **without a human**, drive
 2. Post on the primary MR: findings … then the hand-off line `@protoswype-nanoclaw start implementation`.
 3. Create the loop todo (`POST …/merge_requests/<MR_IID>/todo`).
 
-**On `review` success** — move the story `add_labels=status::done` + `remove_labels=status::in-review`, comment the MR, comment the story. **No** hand-off, **no** self-todo — the loop ends.
+**On `review` success**:
+1. Move the story: `add_labels=status::done,human-needed` **and** `remove_labels=status::in-review` in the same call.
+2. Post a comment on the **story** (not the MR) that:
+   - Starts with `<!-- ai-life-coach:auto -->` and @mentions `@protoswype-group/life-coach`.
+   - States implementation and review passed.
+   - Lists **all MRs** associated with this story, starting with the primary `ai-life-coach-business` MR, then any delivery-repo MRs. Use full cross-project references (see Cross-project references section).
+   - Asks the human to verify the story and reply mentioning you when done, so you can close it.
+3. Post a brief summary comment on the primary MR (implementation complete, story moved to done).
+4. **No** hand-off, **no** self-todo — the loop ends. The human verifies and mentions you to confirm closure.
 
 ### Security gate — max 3 consecutive self-hops
 
@@ -117,11 +135,20 @@ curl -sS "https://gitlab.com/api/v4/projects/84091630/merge_requests/<MR_IID>/no
 
 Any human comment on the MR resets the run, so a human can let the loop continue by replying. Then mark the current todo done and stop, as always.
 
+## Cross-project references
+
+All issues live in `protoswype-group/life-coach/ai-life-coach-business`. MRs may live in that project **or** in a delivery sub-project. Because the service account (`protoswype-nanoclaw`) works across multiple projects, bare `#<iid>` references resolve against the *current project context* and will be wrong when used from a different project.
+
+**Rules — apply everywhere: git commit messages, MR descriptions, comments, wiki edits.**
+
+- **Issues** → always prefix with `ai-life-coach-business`: e.g. `ai-life-coach-business#18` (not `#18`).
+- **MRs** → use the project where the MR actually lives: e.g. `delivery/some-repo!42`, not just `!42` and not `ai-life-coach-business!42` if the MR is in a delivery repo.
+
 ## Guardrails
 
 - One todo per wake. Always mark the todo done before stopping (success or human hand-off).
 - Never expose, embed, or ask for credentials. Clone plain `https://…​.git` URLs; the gateway injects auth. Use `git clone`/`git push` only in implement/review modes.
 - Never push code that fails to build.
 - Keep comments concise and high-signal — humans read every one.
-- Never close a story or set `status::done` yourself except in a successful `review`. Never self-approve (no ✅). Never apply `status::ready` to a story.
+- Never close a story or set `status::done` yourself except in a successful `review`. Never self-approve (no ✅) — that award emoji must come from a human. You do own every `status::*` transition (including `status::ready`), each triggered by a human mention, per the division-of-labour section. `human-needed` goes only on the story, never on an MR.
 - Idempotent: a re-wake must continue cleanly. Check that a branch/MR/comment doesn't already exist before creating it; `git fetch` and rebase/reset onto `origin/<branch>` before pushing.

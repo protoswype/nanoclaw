@@ -89,6 +89,7 @@ if (tt === 'WikiPage::Meta') {
   const slabels = m ? storyLabels(MAIN_PID, m[1]) : null;
   if (slabels && has(slabels, 'status::in-review')) mode = 'review';
   else if (slabels && has(slabels, 'status::in-implementation')) mode = 'implement';
+  else if (slabels && has(slabels, 'status::ready')) mode = 'implement'; // human approved the plan on the MR
   else if (/start\s+review/i.test(body)) mode = 'review';
   else if (/start\s+implement/i.test(body)) mode = 'implement';
   else mode = 'review';
@@ -96,13 +97,21 @@ if (tt === 'WikiPage::Meta') {
   if (has(labels, 'status::in-implementation')) mode = 'implement';
   else if (has(labels, 'status::in-review')) mode = 'review';
   else if (has(labels, 'status::ready')) {
-    // Story ready -> plan (Opus). Epic ready -> create/refine stories (Sonnet).
-    // Distinguish by work-item type: a story is a `Task`.
+    // status::ready is used by both stories and epics. Distinguish by work-item
+    // type: a story is a `Task`.
     const q = gql(`{ project(fullPath:"protoswype-group/life-coach/ai-life-coach-business"){ workItems(iid:"${tgt.iid}"){ nodes{ workItemType{ name } } } } }`);
     let typeName = '';
     try { typeName = q.data.project.workItems.nodes[0].workItemType.name || ''; } catch { typeName = ''; }
-    if (/task/i.test(typeName)) mode = 'plan';
-    else mode = 'epic-or-story';
+    if (/task/i.test(typeName)) {
+      // Story ready. Genuine planning (Opus) only while no plan MR exists yet.
+      // Once the plan MR is up, a new todo here is post-plan — the human
+      // approved the plan (or gave feedback) via a mention — so the agent
+      // implements/revises on Sonnet. Keeps Opus scoped to first planning.
+      const mrs = getJson(`${API}/projects/${MAIN_PID}/merge_requests?state=opened&source_branch=feature%2F${tgt.iid}&per_page=1`);
+      mode = (Array.isArray(mrs) && mrs.length > 0) ? 'implement' : 'plan';
+    } else {
+      mode = 'epic-or-story';
+    }
   }
   else if (has(labels, 'status::in-refinement')) mode = 'story';
   else if (has(labels, 'epic')) mode = 'epic-or-story';
