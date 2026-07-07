@@ -68,16 +68,16 @@ Do **only** the single action for that one todo, then stop. Steps:
 | an **SRS** (a `WikiPage::Meta` under `requirements/srs/`) that needs refining | `srs-refine` | `.agents/.skills/ba-srs-refiner/SKILL.md` | no |
 | an **epic** (Issue) that needs refining | `epic-refine` | `.agents/.skills/po-epic-refiner/SKILL.md` | no |
 | a **comment on an epic** where child **stories** must be created or refined | `story` | `.agents/.skills/po-story-refiner/SKILL.md` | no |
-| a **story** (Issue) that needs a **dev plan** | `plan` | `delivery/.agents/.skills/dev-plan/SKILL.md` | no |
-| a **story / MR** that needs **implementation** | `implement` | `delivery/.agents/.skills/dev-implement/SKILL.md` | **yes** |
-| a **story / MR** that needs **review** | `review` | `delivery/.agents/.skills/dev-code-reviewer/SKILL.md` | **yes** |
+| a **story** (Issue) that needs a **dev plan** | `plan` | `delivery/.agents/skills/dev-plan/SKILL.md` | no |
+| a **story / MR** that needs **implementation** | `implement` | `delivery/.agents/skills/dev-implement/SKILL.md` | **yes** |
+| a **story / MR** that needs **review** | `review` | `delivery/.agents/skills/dev-code-reviewer/SKILL.md` | **yes** |
 
 Fetch a skill via the raw-file API, e.g.:
 ```bash
 curl -sS "https://gitlab.com/api/v4/projects/84091630/repository/files/.agents%2F.skills%2Fba-srs-refiner%2FSKILL.md/raw?ref=main"
-# delivery skills live under delivery/.agents/.skills/<name>/SKILL.md — url-encode the slashes as %2F
+# delivery skills live under delivery/.agents/skills/<name>/SKILL.md — url-encode the slashes as %2F
 ```
-If a delivery skill 404s, fall back to `delivery/AGENTS.md`. If you cannot find the skill you need, post a comment on the target explaining the skill is absent, label the story `human-needed` if there is one, mark the todo done, and stop. **The skill owns the artifact shape** (epic/story/plan/review structure, labels, numbering, validation). Do not re-derive it.
+If a delivery skill 404s, fall back to `delivery/AGENTS.md`. If you cannot find the skill you need, post a comment on the target explaining the skill is absent, label the story `human-needed` if there is one, mark the todo done, and stop. **The skill owns the artifact shape** (epic/story/plan/review structure, labels, numbering, validation) **and the exact output location** — the repo and path where each artifact (plan, review, etc.) is written. Do not re-derive, invent, or duplicate a path; write every artifact at exactly the path the skill specifies.
 
 ## Per-mode notes (state transitions to keep)
 
@@ -89,11 +89,11 @@ The skill owns the *shape*; these are the *lifecycle* rules the pipeline depends
 
 - **`story`** — Load `po-story-refiner`. For a ready epic with no children, break it into child stories (work item type `Task`, native children of the epic), leave them `status::in-refinement` + `human-needed`, and ask the human to review by replying with a mention. For an in-refinement story with new human feedback, adapt it and ask for approval the same way. **When the human approves a refined story (a reply mentioning you), you set `status::ready` yourself** and remove `status::in-refinement` + `human-needed`. Graduating to ready is your label move, triggered by the human's mention — not a label the human sets.
 
-- **`plan`** — Load `dev-plan`. Create branch `feature/<storyIid>` from `main`, write `delivery/dev-plans/issue-<storyIid>/PLAN.md` via the Commits API, create the **primary MR** in the main project, and open MRs in any affected delivery repos (linked from the primary). Post a comment on the primary MR asking the human to **approve by replying with a mention** (never "set a label") and @mention `@protoswype-group/life-coach`. Add `human-needed` **to the story** (not the MR). **When the human approves the plan (a reply mentioning you), that todo returns the story to you: you set `status::in-implementation` yourself, remove `human-needed`, and proceed to implement in the same wake.**
+- **`plan`** — Load `dev-plan`. Create branch `feature/<storyIid>` from `main`, write the plan **at the exact repo path the skill specifies** (via the Commits API — do not invent or duplicate a path), create the **primary MR** in the main project, and open MRs in any affected delivery repos (linked from the primary). Post a comment on the primary MR asking the human to **approve by replying with a mention** (never "set a label") and @mention `@protoswype-group/life-coach`. Add `human-needed` **to the story** (not the MR). **When the human approves the plan (a reply mentioning you), that todo returns the story to you: you set `status::in-implementation` yourself, remove `human-needed`, and proceed to implement in the same wake.**
 
-- **`implement`** — Load `dev-implement`. The story is `status::in-implementation`. Clone the repos (git works here), checkout the existing `feature/<storyIid>` branch, implement per the approved plan, **prove it compiles** (build + test — never push code that fails to build), and push small coherent commits (renames in their own commit; `Ref #<storyIid>` in every message). Then decide the outcome and drive the loop (below).
+- **`implement`** — Load `dev-implement`. The story is `status::in-implementation`. Clone the repos (git works here), checkout the existing `feature/<storyIid>` branch, implement per the approved plan, **prove it compiles** (build + test — never push code that fails to build), and push small coherent commits (renames in their own commit; reference the story in every commit message per the **Cross-project references** rules below — bare `#<storyIid>` only for commits in `ai-life-coach-business` itself, `ai-life-coach-business#<storyIid>` from a delivery repo). Then decide the outcome and drive the loop (below).
 
-- **`review`** — Load `dev-code-reviewer`. The story is `status::in-review`. Clone + checkout `feature/<storyIid>`, build and test, write `delivery/dev-reviews/issue-<storyIid>/REVIEW.md`, commit and push it. Then decide the outcome and drive the loop (below).
+- **`review`** — Load `dev-code-reviewer`. The story is `status::in-review`. Clone + checkout `feature/<storyIid>`, build and test, write the review artifact **at the exact repo path the skill specifies** (do not invent or duplicate a path), commit and push it. Then decide the outcome and drive the loop (below).
 
 ## The autonomous implement↔review loop (in the MR)
 
