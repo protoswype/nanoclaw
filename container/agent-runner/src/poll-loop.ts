@@ -167,11 +167,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    // Per-wake model override: a pre-task gate may emit `{ model: ... }` in its
+    // script output (stored as `content.scriptOutput` by applyPreTaskScripts).
+    // The first task message carrying one wins for this batch. Lets a bash gate
+    // pick the model per task type without a container restart.
+    const modelOverride = extractModelOverride(keep);
+    if (modelOverride) log(`Pre-task gate selected model: ${modelOverride}`);
+
     const query = config.provider.query({
       prompt,
       continuation,
       cwd: config.cwd,
       systemContext: config.systemContext,
+      model: modelOverride,
     });
 
     // Process the query while concurrently polling for new messages
@@ -251,6 +259,26 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
   }
 
   return parts.join('\n\n');
+}
+
+/**
+ * Pull a per-wake model override out of a batch. A pre-task gate stores its
+ * result under `content.scriptOutput` (see applyPreTaskScripts); if that object
+ * carries a non-empty `model` string, return it. First match wins. Anything
+ * malformed is ignored — the provider default applies.
+ */
+function extractModelOverride(messages: MessageInRow[]): string | undefined {
+  for (const msg of messages) {
+    if (msg.kind !== 'task') continue;
+    try {
+      const content = JSON.parse(msg.content) as { scriptOutput?: { model?: unknown } };
+      const model = content.scriptOutput?.model;
+      if (typeof model === 'string' && model.trim()) return model.trim();
+    } catch {
+      /* not JSON / no override — skip */
+    }
+  }
+  return undefined;
 }
 
 interface QueryResult {
