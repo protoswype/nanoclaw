@@ -5,7 +5,14 @@ import type { MessageInRow } from '../db/messages-in.js';
 import { touchHeartbeat } from '../db/connection.js';
 
 const SCRIPT_TIMEOUT_MS = 30_000;
+// Cap for per-task overrides (content.scriptTimeoutSeconds). Must stay well
+// below the host's 30-min stale-heartbeat kill ceiling (src/host-sweep.ts) —
+// the heartbeat is touched on an interval while the script runs, but a
+// runaway script must still lose to the timeout before the host loses
+// patience with the container.
+const SCRIPT_TIMEOUT_MAX_MS = 20 * 60_000;
 const SCRIPT_MAX_BUFFER = 1024 * 1024;
+const HEARTBEAT_INTERVAL_MS = 30_000;
 
 export interface ScriptResult {
   wakeAgent: boolean;
@@ -16,16 +23,21 @@ function log(msg: string): void {
   console.error(`[task-script] ${msg}`);
 }
 
-export async function runScript(script: string, taskId: string): Promise<ScriptResult | null> {
+export async function runScript(script: string, taskId: string, timeoutMs: number = SCRIPT_TIMEOUT_MS): Promise<ScriptResult | null> {
   const scriptPath = path.join('/tmp', `task-script-${taskId}.sh`);
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+
+  // Long-running scripts (per-task timeout override) must keep the heartbeat
+  // fresh or the host sweep will kill the container mid-scrape.
+  const heartbeat = setInterval(touchHeartbeat, HEARTBEAT_INTERVAL_MS);
 
   return new Promise((resolve) => {
     execFile(
       'bash',
       [scriptPath],
-      { timeout: SCRIPT_TIMEOUT_MS, maxBuffer: SCRIPT_MAX_BUFFER, env: process.env },
+      { timeout: timeoutMs, maxBuffer: SCRIPT_MAX_BUFFER, env: process.env },
       (error, stdout, stderr) => {
+        clearInterval(heartbeat);
         try {
           fs.unlinkSync(scriptPath);
         } catch {
@@ -100,9 +112,17 @@ export async function applyPreTaskScripts(messages: MessageInRow[]): Promise<Tas
       continue;
     }
 
-    log(`running script for task ${msg.id}`);
+    // Optional per-task timeout override (seconds), capped. Tasks whose
+    // script does real work (scrape + push cycles) need more than the 30s
+    // default; the cap keeps a runaway script below the host kill ceiling.
+    const timeoutMs =
+      typeof content.scriptTimeoutSeconds === 'number' && content.scriptTimeoutSeconds > 0
+        ? Math.min(content.scriptTimeoutSeconds * 1000, SCRIPT_TIMEOUT_MAX_MS)
+        : undefined;
+
+    log(`running script for task ${msg.id}${timeoutMs ? ` (timeout ${timeoutMs / 1000}s)` : ''}`);
     touchHeartbeat();
-    const result = await runScript(script, msg.id);
+    const result = await runScript(script, msg.id, timeoutMs);
     touchHeartbeat();
 
     if (!result || !result.wakeAgent) {
