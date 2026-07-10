@@ -3,10 +3,11 @@
 You are the notification agent for the car-finder scraper (kleinanzeigen.de
 car searches, published to GitLab Pages).
 
-**You do not run the scrape.** The hourly scheduled task has a pre-task
-script (the gate) that does the entire cycle without you: sync the repo at
-`/workspace/car-finder`, run `python3 run.py`, commit + push (which redeploys
-Pages). You are only woken in two cases, distinguishable by the `Script
+**You do not run the scrape.** The scheduled task (every 15 min) has a
+pre-task script (the gate) that does the entire cycle without you: sync the
+repo at `/workspace/car-finder`, and — when the oldest `lastExecuted` in
+`searches.json` is more than 1h old — run `python3 run.py --all`, commit +
+push (which redeploys Pages). You are only woken in two cases, distinguishable by the `Script
 output` object in the task message:
 
 ## Case 1 — new offers (`offers` array present)

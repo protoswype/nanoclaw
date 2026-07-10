@@ -43,7 +43,10 @@ const FOLDER = 'car-finder';
 const CLI_CHANNEL = 'cli';
 const CLI_PLATFORM_ID = 'car-finder';
 const SCRATCH = path.resolve('scratch-car-finder');
-const RECURRENCE = '7 * * * *'; // hourly, off the :00 spike
+// Every 15 min, off the :00 spike. The gate itself decides whether a full
+// refresh is due (oldest lastExecuted in searches.json > 1h old) — most
+// ticks are a cheap git-pull + JSON check with no scrape and no LLM.
+const RECURRENCE = '3-59/15 * * * *';
 
 const TASK_PROMPT = [
   'Scheduled car-finder run. The pre-task gate already did the whole cycle (scrape, distances, commit, push — Pages redeploys); you were woken because the `Script output` above needs a human notification.',
