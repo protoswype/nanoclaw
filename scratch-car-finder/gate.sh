@@ -10,12 +10,12 @@
 #
 # Cycle:
 #   1. clone (first run) / sync the repo at /workspace/car-finder
-#   2. due check: oldest lastExecuted in searches.json > 1h old? no -> skip
-#   3. python3 run.py --all  (falls back to search.py + distance.py)
-#   4. commit + push state/results — push to main triggers the Pages deploy
-#   5. offers with firstSeen == their block's lastRun (results.json):
-#        none -> {"wakeAgent":false}  (zero LLM spend)
-#        some -> wake with the new offers' details
+#   2. due check: last_run.json timestamp > 1h old (or missing)? no -> skip
+#   3. python3 run.py  (repo entrypoint: all searches x all sources + distances)
+#   4. commit + push whole tree — push to main triggers the Pages deploy
+#   5. last_run.json newOffersFound:
+#        false -> {"wakeAgent":false}  (zero LLM spend)
+#        true  -> wake with the added offers' details from results.json
 #   Any failure wakes the agent with {"error": ...} so it can report it.
 #
 # Emits exactly one final JSON line: {"wakeAgent":bool,"data":{...}}.
@@ -59,6 +59,10 @@ for ca in /tmp/onecli-combined-ca.pem "${NODE_EXTRA_CA_CERTS:-}" /tmp/onecli-gat
 done
 
 # --- 1. clone / sync ---------------------------------------------------------
+# The workspace is a host bind mount; uid mismatches (docker exec, host uid
+# remaps) otherwise trip git's dubious-ownership refusal.
+git config --global --add safe.directory "$DIR" 2>/dev/null || true
+
 if [ ! -d "$DIR/.git" ]; then
   git clone "$REPO_URL" "$DIR" >>"$LOG" 2>&1 || fail "git clone failed"
   git -C "$DIR" config user.name "car-finder-bot"
@@ -75,67 +79,74 @@ git pull --rebase origin main >>"$LOG" 2>&1 || {
 }
 
 # --- 2. due check ------------------------------------------------------------
-# Fires every 15 min, but a full refresh only runs when the OLDEST
-# lastExecuted in searches.json is more than 1h old (never-run counts as
-# oldest). The 15-min tick exists so config changes (new search, manual
-# lastExecuted reset) are picked up quickly without scraping 4x per hour.
+# Fires every 15 min, but a full refresh only runs when the last completed
+# cycle (last_run.json `timestamp`, committed with every run — also by the
+# user's local runs) is more than 1h old. Missing/unreadable counts as due.
+# searches.json is read-only config since the multi-source rewrite and holds
+# no schedule state anymore.
 due=$(python3 - <<'PY'
 import json, datetime
-searches = json.load(open("searches.json")).get("searches", [])
-def ts(s):
-    v = s.get("lastExecuted")
-    if not v:
-        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-    return datetime.datetime.fromisoformat(v.replace("Z", "+00:00"))
-oldest = min((ts(s) for s in searches), default=None)
+try:
+    v = json.load(open("last_run.json"))["timestamp"]
+    last = datetime.datetime.fromisoformat(v.replace("Z", "+00:00"))
+except Exception:
+    print("due")
+    raise SystemExit(0)
 now = datetime.datetime.now(datetime.timezone.utc)
-print("due" if oldest is not None and (now - oldest).total_seconds() > 3600 else "skip")
+print("due" if (now - last).total_seconds() > 3600 else "skip")
 PY
-) || fail "due check failed (searches.json unreadable?)"
+) || fail "due check failed"
 
 if [ "$due" != "due" ]; then
   echo '{"wakeAgent": false, "data": {}}'
   exit 0
 fi
 
-# --- 3. run the cycle (ALL searches) -----------------------------------------
-if [ -f run.py ]; then
-  python3 run.py --all >>"$LOG" 2>&1
-  rc=$?
-else
-  python3 search.py >>"$LOG" 2>&1 && python3 distance.py >>"$LOG" 2>&1
-  rc=$?
-fi
-[ "$rc" -eq 2 ] && fail "scrape blocked or page layout changed (exit 2) — previous results kept"
+# --- 3. run the cycle --------------------------------------------------------
+# run.py is the repo's stable entrypoint contract: all searches on all
+# sources + distances, no arguments. Internal script layout may change.
+python3 run.py >>"$LOG" 2>&1
+rc=$?
+[ "$rc" -eq 2 ] && fail "every scrape source blocked or layout changed (exit 2) — previous results kept"
 [ "$rc" -ne 0 ] && fail "run failed (exit $rc)"
 
 # --- 4. publish --------------------------------------------------------------
-git add -A searches.json distance_cache.json last_run.json public/ >>"$LOG" 2>&1
+# Whole tree, not a file list — the run mutates results, report and caches
+# (distance_cache.json, mobile_refdata_cache.json, ...) and the set may grow.
+git add -A >>"$LOG" 2>&1
 if ! git diff --cached --quiet; then
   git commit -m "update results $(date -u +%F_%H%M)" >>"$LOG" 2>&1 || fail "git commit failed"
   git push origin main >>"$LOG" 2>&1 || fail "git push failed"
 fi
 
 # --- 5. wake decision --------------------------------------------------------
-# NOT based on last_run.json: `run.py --all` overwrites it once per search,
-# so it only reports the LAST search of the cycle. Instead use the documented
-# results.json invariant (README): firstSeen == the block's lastRun marks
-# offers added by this run — works across every search in the --all cycle.
-python3 - "$PAGES_URL" <<'PY' || fail "reading results.json failed"
+# last_run.json is the documented automation contract and — since the
+# multi-source rewrite — reports the WHOLE cycle (all searches, all sources).
+# Offer details for the added ids come from results.json.
+# sourceFailures alone never wakes: mobile.de is macOS-only (Akamai TLS
+# fingerprint) and fails on every containerized run by design.
+python3 - "$PAGES_URL" <<'PY' || fail "reading last_run.json/results.json failed"
 import json, sys
 
+lr = json.load(open("last_run.json"))
+if not lr.get("newOffersFound"):
+    print(json.dumps({"wakeAgent": False, "data": {}}))
+    raise SystemExit(0)
+
+added = set(lr.get("added") or [])
 offers = []
-total = 0
+seen = set()
 res = json.load(open("public/results.json"))
 for sid, block in res.get("searches", {}).items():
-    last_run = block.get("lastRun")
     for o in block.get("offers", []):
-        total += 1
-        if last_run and o.get("firstSeen") == last_run:
+        oid = o.get("offerId")
+        if oid in added and oid not in seen:
+            seen.add(oid)
             offers.append({
-                "offerId": o.get("offerId"),
+                "offerId": oid,
                 "searchId": sid,
                 "searchName": (block.get("spec") or {}).get("name"),
+                "source": o.get("source"),
                 "title": o.get("title"),
                 "price": o.get("priceRaw") or o.get("price"),
                 "kilometerstand": o.get("kilometerstand"),
@@ -144,15 +155,14 @@ for sid, block in res.get("searches", {}).items():
                 "distanceFromHome": o.get("distanceFromHome"),
                 "travelTimeMinutes": o.get("travelTimeMinutes"),
                 "link": o.get("link"),
+                "altLink": o.get("altLink"),
             })
 
-if not offers:
-    print(json.dumps({"wakeAgent": False, "data": {}}))
-else:
-    print(json.dumps({"wakeAgent": True, "data": {
-        "added": sorted(o["offerId"] for o in offers if o.get("offerId")),
-        "totalOffers": total,
-        "offers": offers,
-        "pagesUrl": sys.argv[1],
-    }}))
+print(json.dumps({"wakeAgent": True, "data": {
+    "added": sorted(added),
+    "totalOffers": lr.get("totalOffers"),
+    "sourceFailures": lr.get("sourceFailures") or [],
+    "offers": offers,
+    "pagesUrl": sys.argv[1],
+}}))
 PY

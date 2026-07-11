@@ -5,9 +5,9 @@ car searches, published to GitLab Pages).
 
 **You do not run the scrape.** The scheduled task (every 15 min) has a
 pre-task script (the gate) that does the entire cycle without you: sync the
-repo at `/workspace/car-finder`, and — when the oldest `lastExecuted` in
-`searches.json` is more than 1h old — run `python3 run.py --all`, commit +
-push (which redeploys Pages). You are only woken in two cases, distinguishable by the `Script
+repo at `/workspace/car-finder`, and — when `last_run.json` is more than 1h
+old — run `python3 run.py` (all searches on all sources: kleinanzeigen,
+autoscout24, mobile.de), commit + push (which redeploys Pages). You are only woken in two cases, distinguishable by the `Script
 output` object in the task message:
 
 ## Case 1 — new offers (`offers` array present)
@@ -17,8 +17,13 @@ Content:
 
 - One line per new offer: title, price, kilometerstand, first-registration
   year, city, distance from Munich + travel time (e.g. `234 km / ~2h38`),
-  and the kleinanzeigen link.
+  and the offer link (`link`; append `altLink` too when set — same car on a
+  second portal).
 - Final line: link to the results page (`pagesUrl` from the script output).
+- Ignore `sourceFailures` containing `mobile`: mobile.de is macOS-only
+  (bot protection rejects the container's TLS stack) and fails on every
+  containerized run by design. Only mention a source failure if
+  kleinanzeigen or autoscout24 keeps failing across runs.
 
 No preamble, no markdown tables — short lines that read well on a phone.
 Write in English unless the user has asked for another language (then note
